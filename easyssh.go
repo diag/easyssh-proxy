@@ -36,6 +36,7 @@ type (
 		Password string
 		Timeout  time.Duration
 		Proxy    DefaultConfig
+		Client   *ssh.Client
 	}
 
 	// DefaultConfig for ssh proxy config
@@ -116,37 +117,42 @@ func (ssh_conf *MakeConfig) Connect() (*ssh.Session, error) {
 		Timeout:  ssh_conf.Timeout,
 	})
 
-	// Enable proxy command
-	if ssh_conf.Proxy.Server != "" {
-		proxyConfig := getSSHConfig(DefaultConfig{
-			User:     ssh_conf.Proxy.User,
-			Key:      ssh_conf.Proxy.Key,
-			KeyPath:  ssh_conf.Proxy.KeyPath,
-			Password: ssh_conf.Proxy.Password,
-			Timeout:  ssh_conf.Proxy.Timeout,
-		})
+	if ssh_conf.Client == nil {
+		// Enable proxy command
+		if ssh_conf.Proxy.Server != "" {
+			proxyConfig := getSSHConfig(DefaultConfig{
+				User:     ssh_conf.Proxy.User,
+				Key:      ssh_conf.Proxy.Key,
+				KeyPath:  ssh_conf.Proxy.KeyPath,
+				Password: ssh_conf.Proxy.Password,
+				Timeout:  ssh_conf.Proxy.Timeout,
+			})
 
-		proxyClient, err := ssh.Dial("tcp", net.JoinHostPort(ssh_conf.Proxy.Server, ssh_conf.Proxy.Port), proxyConfig)
-		if err != nil {
-			return nil, err
+			proxyClient, err := ssh.Dial("tcp", net.JoinHostPort(ssh_conf.Proxy.Server, ssh_conf.Proxy.Port), proxyConfig)
+			if err != nil {
+				return nil, err
+			}
+
+			conn, err := proxyClient.Dial("tcp", net.JoinHostPort(ssh_conf.Server, ssh_conf.Port))
+			if err != nil {
+				return nil, err
+			}
+
+			ncc, chans, reqs, err := ssh.NewClientConn(conn, net.JoinHostPort(ssh_conf.Server, ssh_conf.Port), targetConfig)
+			if err != nil {
+				return nil, err
+			}
+
+			client = ssh.NewClient(ncc, chans, reqs)
+		} else {
+			client, err = ssh.Dial("tcp", net.JoinHostPort(ssh_conf.Server, ssh_conf.Port), targetConfig)
+			if err != nil {
+				return nil, err
+			}
 		}
-
-		conn, err := proxyClient.Dial("tcp", net.JoinHostPort(ssh_conf.Server, ssh_conf.Port))
-		if err != nil {
-			return nil, err
-		}
-
-		ncc, chans, reqs, err := ssh.NewClientConn(conn, net.JoinHostPort(ssh_conf.Server, ssh_conf.Port), targetConfig)
-		if err != nil {
-			return nil, err
-		}
-
-		client = ssh.NewClient(ncc, chans, reqs)
+		ssh_conf.Client = client
 	} else {
-		client, err = ssh.Dial("tcp", net.JoinHostPort(ssh_conf.Server, ssh_conf.Port), targetConfig)
-		if err != nil {
-			return nil, err
-		}
+		client = ssh_conf.Client
 	}
 
 	session, err := client.NewSession()
@@ -255,6 +261,33 @@ loop:
 	return outStr, errStr, isTimeout, err
 }
 
+// RunCombined runs the command on the remote machine and returns combined stdout and stderr output
+func (ssh_conf *MakeConfig) RunCombined(command string, timeout time.Duration) (outStr string, isTimeout bool, err error) {
+	stdoutChan, stderrChan, doneChan, errChan, err := ssh_conf.Stream(command, timeout)
+	if err != nil {
+		return outStr, isTimeout, err
+	}
+	// read from the output channel until the done signal is passed
+loop:
+	for {
+		select {
+		case isTimeout = <-doneChan:
+			break loop
+		case outline := <-stdoutChan:
+			if outline != "" {
+				outStr += outline + "\n"
+			}
+		case errline := <-stderrChan:
+			if errline != "" {
+				outStr += errline + "\n"
+			}
+		case err = <-errChan:
+		}
+	}
+	// return the concatenation of all signals from the output channel
+	return outStr, isTimeout, err
+}
+
 // Scp uploads sourceFile to remote machine like native scp console app.
 func (ssh_conf *MakeConfig) Scp(sourceFile string, etargetFile string) error {
 	session, err := ssh_conf.Connect()
@@ -262,7 +295,6 @@ func (ssh_conf *MakeConfig) Scp(sourceFile string, etargetFile string) error {
 	if err != nil {
 		return err
 	}
-	defer session.Close()
 
 	targetFile := filepath.Base(etargetFile)
 
@@ -297,4 +329,9 @@ func (ssh_conf *MakeConfig) Scp(sourceFile string, etargetFile string) error {
 	}()
 
 	return session.Run(fmt.Sprintf("scp -tr %s", etargetFile))
+}
+
+// Close open session
+func (ssh_conf *MakeConfig) Close() error {
+	return ssh_conf.Client.Close()
 }
