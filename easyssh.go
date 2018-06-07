@@ -117,7 +117,9 @@ func (ssh_conf *MakeConfig) Connect() (*ssh.Session, error) {
 		Password: ssh_conf.Password,
 		Timeout:  ssh_conf.Timeout,
 	})
-	defer sshAgentConn.Close()
+	if sshAgentConn != nil {
+		defer sshAgentConn.Close()
+	}
 
 	if ssh_conf.Client == nil {
 		// Enable proxy command
