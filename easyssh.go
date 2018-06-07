@@ -67,7 +67,7 @@ func getKeyFile(keypath string) (ssh.Signer, error) {
 	return pubkey, nil
 }
 
-func getSSHConfig(config DefaultConfig) *ssh.ClientConfig {
+func getSSHConfig(config DefaultConfig) (*ssh.ClientConfig, net.Conn) {
 	// auths holds the detected ssh auth methods
 	auths := []ssh.AuthMethod{}
 
@@ -91,9 +91,10 @@ func getSSHConfig(config DefaultConfig) *ssh.ClientConfig {
 		}
 	}
 
-	if sshAgent, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK")); err == nil {
+	var sshAgent net.Conn
+	var err error
+	if sshAgent, err = net.Dial("unix", os.Getenv("SSH_AUTH_SOCK")); err == nil {
 		auths = append(auths, ssh.PublicKeysCallback(agent.NewClient(sshAgent).Signers))
-		defer sshAgent.Close()
 	}
 
 	return &ssh.ClientConfig{
@@ -101,7 +102,7 @@ func getSSHConfig(config DefaultConfig) *ssh.ClientConfig {
 		User:            config.User,
 		Auth:            auths,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-	}
+	}, sshAgent
 }
 
 // Connect to remote server using MakeConfig struct and returns *ssh.Session
@@ -109,24 +110,26 @@ func (ssh_conf *MakeConfig) Connect() (*ssh.Session, error) {
 	var client *ssh.Client
 	var err error
 
-	targetConfig := getSSHConfig(DefaultConfig{
+	targetConfig, sshAgentConn := getSSHConfig(DefaultConfig{
 		User:     ssh_conf.User,
 		Key:      ssh_conf.Key,
 		KeyPath:  ssh_conf.KeyPath,
 		Password: ssh_conf.Password,
 		Timeout:  ssh_conf.Timeout,
 	})
+	defer sshAgentConn.Close()
 
 	if ssh_conf.Client == nil {
 		// Enable proxy command
 		if ssh_conf.Proxy.Server != "" {
-			proxyConfig := getSSHConfig(DefaultConfig{
+			proxyConfig, sshAgentConn := getSSHConfig(DefaultConfig{
 				User:     ssh_conf.Proxy.User,
 				Key:      ssh_conf.Proxy.Key,
 				KeyPath:  ssh_conf.Proxy.KeyPath,
 				Password: ssh_conf.Proxy.Password,
 				Timeout:  ssh_conf.Proxy.Timeout,
 			})
+			defer sshAgentConn.Close()
 
 			proxyClient, err := ssh.Dial("tcp", net.JoinHostPort(ssh_conf.Proxy.Server, ssh_conf.Proxy.Port), proxyConfig)
 			if err != nil {
