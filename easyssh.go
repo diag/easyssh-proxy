@@ -168,6 +168,13 @@ func (ssh_conf *MakeConfig) Connect() (*ssh.Session, error) {
 	return session, nil
 }
 
+// Reconnect drops an existing connection and forces a reconnection
+func (ssh_conf *MakeConfig) Reconnect() (*ssh.Session, error) {
+	ssh_conf.Client.Close()
+	ssh_conf.Client = nil
+	return ssh_conf.Connect()
+}
+
 // Stream returns one channel that combines the stdout and stderr of the command
 // as it is run on the remote machine, and another that sends true when the
 // command is done. The sessions and channels will then be closed.
